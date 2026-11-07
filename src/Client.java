@@ -31,32 +31,16 @@ public class Client {
 
                         if (response.startsWith("MESSAGE|")) {
 
-                            String[] parts =
-                                    response.split("\\|", 4);
+                            String[] parts = response.split("\\|", 3);
 
-                            if (parts.length == 4) {
+                            if (parts.length == 3) {
 
-                                System.out.println(
-                                        "\nMensagem cifrada recebida de: "
-                                                + parts[1]
-                                );
-
-                                System.out.println(
-                                        "Chave AES protegida: "
-                                                + parts[2]
-                                );
-
-                                System.out.println(
-                                        "Mensagem cifrada: "
-                                                + parts[3]
-                                );
+                                System.out.println("\nMensagem recebida de: " + parts[1]);
+                                System.out.println("Payload: " + parts[2]);
                             }
 
                         } else {
-
-                            System.out.println(
-                                    "\nRelay: " + response
-                            );
+                            System.out.println("\nRelay: " + response);
                         }
 
                         System.out.print("Comando: ");

@@ -1,278 +1,366 @@
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.BufferedInputStream;
+import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStreamWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.Base64;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 
+/**
+ * Relay do Mensageiro Seguro.
+ *
+ * Protocolo (texto, UTF-8, uma mensagem por linha, campos separados por '|'):
+ *
+ *   Cliente -> Relay                         Relay -> Cliente
+ *   REGISTER|username                        OK|... | ERROR|...
+ *   LIST                                     USERS|a,b,c
+ *   PUBLISH_KEY|chavePublicaBase64(X.509)    OK|... | ERROR|...
+ *   GET_KEY|username                         PUBLIC_KEY|username|chaveBase64
+ *   SEND|destinatario|payloadBase64          OK|... | ERROR|...
+ *                                            MESSAGE|remetente|payloadBase64
+ *
+ * O payload é opaco para o relay: o formato (IV, chave cifrada, criptograma,
+ * assinatura, ...) é definido pelo cliente e nunca é interpretado aqui.
+ */
 public class Relay {
 
-    private static Set<String> registeredUsers =
-            ConcurrentHashMap.newKeySet();
+    private static final int DEFAULT_PORT = 5000;
+    private static final int MAX_CONNECTIONS = 200;
+    private static final int MAX_LINE_BYTES = 64 * 1024;
+    private static final int MAX_KEY_CHARS = 8 * 1024;
+    private static final int REGISTER_TIMEOUT_MS = 30_000;
 
-    private static Map<String, PrintWriter> clients =
-            new ConcurrentHashMap<>();
+    private static final Pattern USERNAME = Pattern.compile("[A-Za-z0-9_.-]{3,32}");
+    private static final String[] KEY_ALGORITHMS = {"RSA", "EC", "Ed25519"};
 
-    private static Map<String, String> publicKeys =
-            new ConcurrentHashMap<>();
+    private static final Set<String> registeredUsers = ConcurrentHashMap.newKeySet();
+    private static final Map<String, Session> online = new ConcurrentHashMap<>();
+    private static final Map<String, String> publicKeys = new ConcurrentHashMap<>();
+    private static final AtomicInteger connections = new AtomicInteger();
 
-    public static void main(String[] args) {
+    // ---------------------------------------------------------------- sessão
 
-        int port = 5000;
+    private static final class Session {
+        final Socket socket;
+        private final BufferedWriter out;
+        volatile String username;
 
-        try (ServerSocket server = new ServerSocket(port)) {
+        Session(Socket socket) throws IOException {
+            this.socket = socket;
+            this.out = new BufferedWriter(
+                    new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
+        }
 
-            System.out.println("Relay iniciado!");
-            System.out.println("À espera de clientes...");
-
-            while (true) {
-
-                Socket client = server.accept();
-
-                System.out.println("Novo cliente ligado!");
-
-                Thread thread = new Thread(
-                        () -> handleClient(client)
-                );
-
-                thread.start();
+        /** Escrita serializada: várias threads podem enviar para a mesma sessão. */
+        synchronized boolean send(String line) {
+            try {
+                out.write(line);
+                out.write('\n');
+                out.flush();
+                return true;
+            } catch (IOException e) {
+                close();
+                return false;
             }
+        }
 
-        } catch (Exception e) {
-            System.out.println("Erro no Relay: " + e.getMessage());
+        void close() {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
         }
     }
 
-    public static void handleClient(Socket client) {
+    private static final class LineTooLongException extends IOException {
+        private static final long serialVersionUID = 1L;
 
-        String username = null;
-        PrintWriter output = null;
+        LineTooLongException() {
+            super("Linha demasiado longa");
+        }
+    }
 
-        try {
+    // ------------------------------------------------------------------ main
 
-            BufferedReader input = new BufferedReader(
-                    new InputStreamReader(client.getInputStream())
-            );
+    public static void main(String[] args) throws IOException {
+        int port = args.length > 0 ? Integer.parseInt(args[0]) : DEFAULT_PORT;
+        ExecutorService pool = Executors.newCachedThreadPool();
 
-            output = new PrintWriter(
-                    client.getOutputStream(), true
-            );
+        try (ServerSocket server = new ServerSocket(port)) {
+            log("Relay iniciado na porta " + port);
 
-            String message;
+            while (true) {
+                Socket socket = server.accept();
 
-            while ((message = input.readLine()) != null) {
-
-                System.out.println("Mensagem recebida: " + message);
-
-                String[] parts = message.split("\\|", 4);
-
-                // REGISTO
-                if (parts[0].equals("REGISTER")) {
-
-                    if (parts.length != 2 || username != null) {
-                        output.println("ERROR|Pedido de registo inválido");
-                        continue;
-                    }
-
-                    String requestedUsername = parts[1];
-
-                    if (requestedUsername.isBlank()
-                            || requestedUsername.contains("|")) {
-                        output.println("ERROR|Nome inválido");
-                        continue;
-                    }
-
-                    if (clients.putIfAbsent(
-                            requestedUsername, output
-                    ) == null) {
-
-                        registeredUsers.add(requestedUsername);
-                        username = requestedUsername;
-
-                        System.out.println(
-                                "Novo utilizador: " + username
-                        );
-
-                        output.println("OK|Utilizador registado");
-
-                    } else {
-                        output.println(
-                                "ERROR|Utilizador já está online"
-                        );
-                    }
+                if (connections.incrementAndGet() > MAX_CONNECTIONS) {
+                    connections.decrementAndGet();
+                    reject(socket);
+                    continue;
                 }
 
-                // LISTAR UTILIZADORES
-                else if (parts[0].equals("LIST")) {
-
-                    if (username == null) {
-                        output.println("ERROR|Tens de estar registado");
-                        continue;
-                    }
-
-                    List<String> users =
-                            new ArrayList<>(registeredUsers);
-
-                    Collections.sort(users);
-
-                    output.println(
-                            "USERS|" + String.join(",", users)
-                    );
-                }
-
-                // PUBLICAR CHAVE PÚBLICA
-                else if (parts[0].equals("PUBLISH_KEY")) {
-
-                    if (username == null) {
-                        output.println("ERROR|Tens de estar registado");
-                        continue;
-                    }
-
-                    if (parts.length != 2 || parts[1].isBlank()) {
-                        output.println("ERROR|Chave inválida");
-                        continue;
-                    }
-
+                pool.execute(() -> {
                     try {
-
-                        byte[] decoded =
-                                Base64.getDecoder().decode(parts[1]);
-
-                        if (decoded.length == 0) {
-                            output.println("ERROR|Chave inválida");
-                            continue;
-                        }
-
-                        publicKeys.put(username, parts[1]);
-
-                        output.println(
-                                "OK|Chave pública guardada"
-                        );
-
-                    } catch (IllegalArgumentException e) {
-
-                        output.println(
-                                "ERROR|Formato Base64 inválido"
-                        );
+                        handleClient(socket);
+                    } finally {
+                        connections.decrementAndGet();
                     }
-                }
-
-                // CONSULTAR CHAVE PÚBLICA
-                else if (parts[0].equals("GET_KEY")) {
-
-                    if (username == null) {
-                        output.println("ERROR|Tens de estar registado");
-                        continue;
-                    }
-
-                    if (parts.length != 2
-                            || parts[1].isBlank()) {
-                        output.println("ERROR|Pedido inválido");
-                        continue;
-                    }
-
-                    String requestedUser = parts[1];
-
-                    String publicKey =
-                            publicKeys.get(requestedUser);
-
-                    if (publicKey == null) {
-
-                        output.println(
-                                "ERROR|Chave pública não encontrada"
-                        );
-
-                    } else {
-
-                        output.println(
-                                "PUBLIC_KEY|" +
-                                        requestedUser + "|" +
-                                        publicKey
-                        );
-                    }
-                }
-
-                // ENVIAR MENSAGEM CIFRADA
-                else if (parts[0].equals("SEND")) {
-
-                    if (username == null) {
-                        output.println("ERROR|Tens de estar registado");
-                        continue;
-                    }
-
-                    if (parts.length != 4) {
-                        output.println("ERROR|Formato inválido");
-                        continue;
-                    }
-
-                    String recipient = parts[1];
-                    String encryptedAESKey = parts[2];
-                    String encryptedMessage = parts[3];
-
-                    if (recipient.isBlank()
-                            || encryptedAESKey.isBlank()
-                            || encryptedMessage.isBlank()) {
-                        output.println("ERROR|Dados inválidos");
-                        continue;
-                    }
-
-                    PrintWriter recipientOutput =
-                            clients.get(recipient);
-
-                    if (recipientOutput == null) {
-
-                        output.println(
-                                "ERROR|Destinatário não está ligado"
-                        );
-
-                    } else {
-
-                        recipientOutput.println(
-                                "MESSAGE|" + username + "|" +
-                                        encryptedAESKey + "|" +
-                                        encryptedMessage
-                        );
-
-                        output.println("OK|Mensagem enviada");
-                    }
-                }
-
-                // COMANDO DESCONHECIDO
-                else {
-
-                    output.println("ERROR|Comando desconhecido");
-                }
-            }
-
-        } catch (Exception e) {
-
-            System.out.println(
-                    "Erro ao comunicar com cliente: " +
-                            e.getMessage()
-            );
-
-        } finally {
-
-            if (username != null && output != null) {
-
-                clients.remove(username, output);
-
-                System.out.println(
-                        "Utilizador desligado: " + username
-                );
-            }
-
-            try {
-                client.close();
-            } catch (Exception e) {
-                System.out.println("Erro ao fechar ligação.");
+                });
             }
         }
+    }
+
+    private static void reject(Socket socket) {
+        try (socket) {
+            socket.getOutputStream()
+                    .write("ERROR|Relay cheio\n".getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {
+        }
+    }
+
+    // ------------------------------------------------------------ ligação
+
+    private static void handleClient(Socket socket) {
+        Session session = null;
+
+        try {
+            // Quem não se regista a tempo é desligado (evita ligações penduradas).
+            socket.setSoTimeout(REGISTER_TIMEOUT_MS);
+            session = new Session(socket);
+            InputStream in = new BufferedInputStream(socket.getInputStream());
+
+            String line;
+            while ((line = readLine(in)) != null) {
+                process(session, line);
+            }
+
+        } catch (LineTooLongException e) {
+            if (session != null) session.send("ERROR|Linha demasiado longa");
+            log("Ligação terminada: linha demasiado longa");
+        } catch (SocketTimeoutException e) {
+            if (session != null) session.send("ERROR|Tempo de registo excedido");
+            log("Ligação terminada: sem registo a tempo");
+        } catch (IOException e) {
+            log("Ligação terminada: " + e.getMessage());
+        } finally {
+            if (session != null) {
+                String user = session.username;
+                if (user != null) {
+                    online.remove(user, session);
+                    log("Utilizador desligado: " + user);
+                }
+                session.close();
+            } else {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+
+    /** Lê uma linha terminada em '\n' com limite de tamanho. null = fim da ligação. */
+    private static String readLine(InputStream in) throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream(256);
+        int b;
+
+        while ((b = in.read()) != -1) {
+            if (b == '\n') {
+                byte[] bytes = buf.toByteArray();
+                int len = bytes.length;
+                if (len > 0 && bytes[len - 1] == '\r') len--;
+                return new String(bytes, 0, len, StandardCharsets.UTF_8);
+            }
+            if (buf.size() >= MAX_LINE_BYTES) {
+                throw new LineTooLongException();
+            }
+            buf.write(b);
+        }
+        return null;
+    }
+
+    // ------------------------------------------------------------ comandos
+
+    private static void process(Session s, String line) {
+        String[] p = line.split("\\|", 3);
+
+        if (p[0].equals("REGISTER")) {
+            register(s, p);
+            return;
+        }
+
+        if (s.username == null) {
+            s.send("ERROR|Tens de estar registado");
+            return;
+        }
+
+        switch (p[0]) {
+            case "LIST":
+                list(s, p);
+                break;
+            case "PUBLISH_KEY":
+                publishKey(s, p);
+                break;
+            case "GET_KEY":
+                getKey(s, p);
+                break;
+            case "SEND":
+                send(s, p);
+                break;
+            default:
+                s.send("ERROR|Comando desconhecido");
+        }
+    }
+
+    private static void register(Session s, String[] p) {
+        if (s.username != null || p.length != 2) {
+            s.send("ERROR|Pedido de registo inválido");
+            return;
+        }
+
+        String name = p[1];
+
+        if (!USERNAME.matcher(name).matches()) {
+            s.send("ERROR|Nome inválido (3-32 caracteres: letras, números, '_', '.', '-')");
+            return;
+        }
+
+        if (online.putIfAbsent(name, s) != null) {
+            s.send("ERROR|Utilizador já está online");
+            return;
+        }
+
+        s.username = name;
+        registeredUsers.add(name);
+
+        try {
+            s.socket.setSoTimeout(0); // já registado: pode ficar à espera de mensagens
+        } catch (IOException ignored) {
+        }
+
+        log("Novo utilizador: " + name);
+        s.send("OK|Utilizador registado");
+    }
+
+    private static void list(Session s, String[] p) {
+        if (p.length != 1) {
+            s.send("ERROR|Pedido inválido");
+            return;
+        }
+        List<String> users = new ArrayList<>(registeredUsers);
+        Collections.sort(users);
+        s.send("USERS|" + String.join(",", users));
+    }
+
+    private static void publishKey(Session s, String[] p) {
+        if (p.length != 2) {
+            s.send("ERROR|Chave inválida");
+            return;
+        }
+
+        byte[] der = decodePublicKey(p[1]);
+        if (der == null) {
+            s.send("ERROR|Chave inválida");
+            return;
+        }
+
+        String canonical = Base64.getEncoder().encodeToString(der);
+
+        // A chave de um utilizador não pode ser substituída por outra.
+        String previous = publicKeys.putIfAbsent(s.username, canonical);
+        if (previous != null && !previous.equals(canonical)) {
+            log("ALERTA: tentativa de substituir a chave de " + s.username);
+            s.send("ERROR|Este utilizador já tem outra chave pública associada");
+            return;
+        }
+
+        s.send("OK|Chave pública guardada");
+    }
+
+    private static void getKey(Session s, String[] p) {
+        if (p.length != 2 || !USERNAME.matcher(p[1]).matches()) {
+            s.send("ERROR|Pedido inválido");
+            return;
+        }
+
+        String key = publicKeys.get(p[1]);
+        if (key == null) {
+            s.send("ERROR|Chave pública não encontrada");
+        } else {
+            s.send("PUBLIC_KEY|" + p[1] + "|" + key);
+        }
+    }
+
+    private static void send(Session s, String[] p) {
+        if (p.length != 3 || p[2].isBlank() || !USERNAME.matcher(p[1]).matches()) {
+            s.send("ERROR|Formato inválido");
+            return;
+        }
+
+        String recipient = p[1];
+        String payload = p[2];
+
+        if (recipient.equals(s.username)) {
+            s.send("ERROR|Não podes enviar mensagens a ti próprio");
+            return;
+        }
+
+        Session target = online.get(recipient);
+        if (target == null) {
+            s.send("ERROR|Destinatário não está ligado");
+            return;
+        }
+
+        // O remetente é sempre o utilizador desta sessão: o cliente não o pode forjar aqui.
+        if (target.send("MESSAGE|" + s.username + "|" + payload)) {
+            log(s.username + " -> " + recipient + " (" + payload.length() + " caracteres)");
+            s.send("OK|Mensagem enviada");
+        } else {
+            s.send("ERROR|Falha na entrega");
+        }
+    }
+
+    // ------------------------------------------------------------ auxiliares
+
+    /** Devolve os bytes DER da chave se for uma chave pública X.509 válida; senão null. */
+    private static byte[] decodePublicKey(String base64) {
+        if (base64.isBlank() || base64.length() > MAX_KEY_CHARS) return null;
+
+        byte[] der;
+        try {
+            der = Base64.getDecoder().decode(base64);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+
+        X509EncodedKeySpec spec = new X509EncodedKeySpec(der);
+        for (String algorithm : KEY_ALGORITHMS) {
+            try {
+                KeyFactory.getInstance(algorithm).generatePublic(spec);
+                return der;
+            } catch (GeneralSecurityException ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static void log(String message) {
+        System.out.println(message);
     }
 }

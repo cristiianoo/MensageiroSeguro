@@ -10,3 +10,19 @@ target/
 # Sistema operativo
 .DS_Store
 Thumbs.db
+# Identidades e segredos gerados localmente
+certificados/
+*.p12
+*.pfx
+*.jks
+*.pem
+.env
+.env.*
+
+# Ficheiros de compilação e pacotes
+out/
+*.class
+*.zip
+
+# Ficheiros do macOS
+.DS_Store

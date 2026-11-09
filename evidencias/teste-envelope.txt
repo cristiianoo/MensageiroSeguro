@@ -1,0 +1,6 @@
+OK — conteúdo recuperado corretamente.
+Olá, Cristiano! Primeira mensagem protegida.
+OK — envelope adulterado rejeitado.
+OK — conteúdo cifrado alterado rejeitado.
+OK — metadados alterados rejeitados.
+OK — chave privada diferente rejeitada.

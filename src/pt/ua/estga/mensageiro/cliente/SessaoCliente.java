@@ -10,7 +10,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -21,6 +20,7 @@ import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 
 import pt.ua.estga.mensageiro.protocolo.Protocolo;
+import pt.ua.estga.mensageiro.seguranca.Caminhos;
 import pt.ua.estga.mensageiro.seguranca.ConfiguracaoTLS;
 import pt.ua.estga.mensageiro.seguranca.EnvelopeSeguro;
 import pt.ua.estga.mensageiro.seguranca.IdentidadeLocal;
@@ -32,10 +32,6 @@ import pt.ua.estga.mensageiro.seguranca.ValidacaoCertificado;
  * para que a lógica de segurança exista num único sítio.
  */
 public final class SessaoCliente implements AutoCloseable {
-
-    /** Identidades preparadas pelo script de certificados. */
-    public static final List<String> UTILIZADORES =
-            List.of("cristiano", "joao");
 
     /** Recebe o que chega do relay sem ter sido pedido. */
     public interface Ouvinte {
@@ -100,42 +96,36 @@ public final class SessaoCliente implements AutoCloseable {
     }
 
     /**
-     * Carrega a identidade, valida-a e abre a ligação TLS ao relay.
-     * As palavras-passe são apagadas da memória antes de retornar.
+     * Abre a conta local com a palavra-passe pessoal, valida-a e liga
+     * ao relay por TLS mútuo. A palavra-passe só decifra o PKCS12 neste
+     * computador e é apagada da memória antes de retornar.
      */
     public static SessaoCliente ligar(
             String utilizador,
-            char[] passeIdentidade,
-            char[] passeConfianca,
+            char[] palavraPasse,
             Ouvinte ouvinte) throws Exception {
-
-        if (!UTILIZADORES.contains(utilizador)) {
-            throw new IllegalArgumentException(
-                    "Utilizador desconhecido: " + utilizador);
-        }
 
         SSLContext contexto;
         IdentidadeLocal identidade;
 
         try {
-            Path ficheiro = Path.of(
-                    "certificados/identidades/" + utilizador + ".p12");
+            if (!Contas.existe(utilizador)) {
+                throw new IllegalStateException("Não existe a conta "
+                        + utilizador + " neste computador.");
+            }
 
-            contexto = ConfiguracaoTLS.criarContexto(
-                    ficheiro,
-                    passeIdentidade,
-                    Path.of("certificados/confianca/confianca.p12"),
-                    passeConfianca);
+            Path ficheiro = Caminhos.conta(utilizador);
+
+            contexto = ConfiguracaoTLS.criarContexto(ficheiro, palavraPasse);
 
             identidade = IdentidadeLocal.carregar(
-                    ficheiro, passeIdentidade, utilizador);
+                    ficheiro, palavraPasse, utilizador);
 
             // Confirmamos também a identidade carregada localmente.
             ValidacaoCertificado.validarUtilizador(
                     identidade.certificado().getEncoded(), utilizador);
         } finally {
-            Arrays.fill(passeIdentidade, '\0');
-            Arrays.fill(passeConfianca, '\0');
+            Arrays.fill(palavraPasse, '\0');
         }
 
         SSLSocket ligacao = (SSLSocket)
@@ -148,7 +138,8 @@ public final class SessaoCliente implements AutoCloseable {
             parametros.setEndpointIdentificationAlgorithm("HTTPS");
             ligacao.setSSLParameters(parametros);
 
-            ligacao.connect(new InetSocketAddress("localhost", 8443), 5_000);
+            ligacao.connect(new InetSocketAddress(
+                    "localhost", Caminhos.PORTA_RELAY), 5_000);
             ligacao.setSoTimeout(10_000);
 
             try {

@@ -1,0 +1,136 @@
+# Integração: contas, Autoridade, relay e auditoria (2026-11-23)
+# Pasta limpa; palavras-passe introduzidas num pseudo-terminal (não aparecem).
+
+### 1. Primeiro arranque dos servidores (sem palavras-passe)
+Primeiro arranque: a criar a CA e as identidades da Autoridade e do relay…
+Preparação concluída. Os segredos dos servidores estão em certificados (só legíveis pelo dono).
+Autoridade à escuta na porta 8444, apenas neste computador. Contas emitidas: 0
+Utilizadores conhecidos: 0
+Relay à escuta na porta 8443, apenas neste computador.
+
+### Permissões criadas
+700 certificados
+700 certificados/autoridade
+600 certificados/autoridade/autoridade.p12
+600 certificados/autoridade/autoridade.segredo
+755 certificados/autoridade/emitidos
+700 certificados/ca
+600 certificados/ca/ca-grupo09.p12
+600 certificados/ca/ca.segredo
+700 certificados/publicos
+644 certificados/publicos/ca-grupo09.crt
+644 certificados/publicos/relay.crt
+700 certificados/relay
+600 certificados/relay/relay.p12
+600 certificados/relay/relay.segredo
+
+### Iterações dos PKCS12 (openssl pkcs12 -info)
+MAC: sha256, Iteration 600000
+Shrouded Keybag: PBES2, PBKDF2, AES-256-CBC, Iteration 600000, PRF hmacWithSHA256
+PKCS7 Encrypted data: PBES2, PBKDF2, AES-256-CBC, Iteration 10000, PRF hmacWithSHA256
+
+### 2. maria cria conta
+Nome de utilizador: maria
+Não existe a conta maria neste computador. Criar conta nova? (s/n) s
+Escolhe uma palavra-passe (mínimo 8 caracteres): 
+Repete a palavra-passe: 
+A criar a conta (gerar chaves e pedir o certificado à Autoridade)…
+Conta maria criada.
+Ligação TLS estabelecida: TLSv1.3
+Registo confirmado: maria
+Mensagens levantadas: 0
+Comandos: procurar <nome>, enviar <nome>, levantar, sair
+> sair
+
+### 3. pedro cria conta
+Nome de utilizador: pedro
+Não existe a conta pedro neste computador. Criar conta nova? (s/n) s
+Escolhe uma palavra-passe (mínimo 8 caracteres): 
+Repete a palavra-passe: 
+A criar a conta (gerar chaves e pedir o certificado à Autoridade)…
+Conta pedro criada.
+Ligação TLS estabelecida: TLSv1.3
+Registo confirmado: pedro
+Mensagens levantadas: 0
+Comandos: procurar <nome>, enviar <nome>, levantar, sair
+> sair
+
+### 4. maria envia ao pedro, que está desligado
+Palavra-passe: 
+Ligação TLS estabelecida: TLSv1.3
+Registo confirmado: maria
+Mensagens levantadas: 0
+Comandos: procurar <nome>, enviar <nome>, levantar, sair
+> enviar pedro
+Mensagem: Olá Pedro!
+Destinatário desligado: envelope guardado no relay.
+> sair
+
+### 5. pedro entra e levanta
+Palavra-passe: 
+Ligação TLS estabelecida: TLSv1.3
+Registo confirmado: pedro
+Mensagens levantadas: 1
+Comandos: procurar <nome>, enviar <nome>, levantar, sair
+> 
+Mensagem verificada de maria: Olá Pedro!
+sair
+
+### 6. Palavra-passe errada
+Palavra-passe: 
+Palavra-passe incorreta.
+
+### 7. Outro computador tenta criar a conta pedro
+Não existe a conta pedro neste computador. Criar conta nova? (s/n) s
+Escolhe uma palavra-passe (mínimo 8 caracteres): 
+Repete a palavra-passe: 
+A criar a conta (gerar chaves e pedir o certificado à Autoridade)…
+Não foi possível criar a conta: Conta recusada: Esse nome já está em uso.
+
+### 8. Palavra-passe curta / nome reservado
+Não existe a conta ana neste computador. Criar conta nova? (s/n) s
+Escolhe uma palavra-passe (mínimo 8 caracteres): 
+Repete a palavra-passe: 
+A criar a conta (gerar chaves e pedir o certificado à Autoridade)…
+Não foi possível criar a conta: A palavra-passe tem de ter pelo menos 8 caracteres.
+
+Não existe a conta relay neste computador. Criar conta nova? (s/n) s
+Escolhe uma palavra-passe (mínimo 8 caracteres): 
+Repete a palavra-passe: 
+A criar a conta (gerar chaves e pedir o certificado à Autoridade)…
+Não foi possível criar a conta: Nome reservado.
+
+### 9. Auditoria com o certificado do relay emitido pela Autoridade
+== Registo original ==
+Cadeia íntegra: 9 entradas, 2 pontos de controlo assinados válidos.
+Último ponto assinado: seq=9 (guarde este valor fora do relay para detetar truncagens futuras).
+-> OK (esperado 0)
+
+== Entrada alterada ==
+REGISTO INVÁLIDO na linha 2: hash não corresponde (entrada alterada)
+  > E|2|2026-11-23T21:19:31Z|ADULTERADO|maria|4db44eaee9d9b1c8e938c18abbd152e23cd68112bcbabc3c26959eb06996c1a5
+-> OK (esperado 1)
+
+== Entrada removida ==
+REGISTO INVÁLIDO na linha 2: esperada a entrada 2, encontrada a 3 (entrada removida ou reordenada)
+  > E|3|2026-11-23T21:19:31Z|LEVANTAMENTO|maria,0|5603015a3ee24a2b3770102ccab0340593bc1fcca02b5666728bb60094bb54ec
+-> OK (esperado 1)
+
+== Entradas reordenadas ==
+REGISTO INVÁLIDO na linha 2: esperada a entrada 2, encontrada a 3 (entrada removida ou reordenada)
+  > E|3|2026-11-23T21:19:31Z|LEVANTAMENTO|maria,0|5603015a3ee24a2b3770102ccab0340593bc1fcca02b5666728bb60094bb54ec
+-> OK (esperado 1)
+
+### 10. Autoridade desligada
+Não existe a conta ana neste computador. Criar conta nova? (s/n) s
+Escolhe uma palavra-passe (mínimo 8 caracteres): 
+Repete a palavra-passe: 
+A criar a conta (gerar chaves e pedir o certificado à Autoridade)…
+Não foi possível criar a conta: Não foi possível contactar a Autoridade em localhost:8444. Está a correr?
+
+### Registo da Autoridade
+Primeiro arranque: a criar a CA e as identidades da Autoridade e do relay…
+Preparação concluída. Os segredos dos servidores estão em certificados (só legíveis pelo dono).
+Autoridade à escuta na porta 8444, apenas neste computador. Contas emitidas: 0
+Conta criada: maria
+Conta criada: pedro

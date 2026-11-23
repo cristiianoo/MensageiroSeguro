@@ -11,6 +11,8 @@ public final class Protocolo {
     public static final int ENVIAR = 3;
     // Sem dados: a identidade vem sempre do certificado da sessão TLS.
     public static final int LEVANTAR = 4;
+    // Só para a Autoridade (porta 8444): nome, chave pública, prova de posse.
+    public static final int CRIAR_CONTA = 10;
     public static final int ENTREGA = 102;
 
     public static final int SUCESSO = 100;

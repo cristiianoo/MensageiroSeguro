@@ -1,53 +1,73 @@
 package pt.ua.estga.mensageiro.seguranca;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Base64;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.cert.X509Certificate;
+import java.time.Duration;
 
 /**
  * Testa a validação dos certificados devolvidos pelo relay na descoberta.
- * Usa apenas os certificados públicos gerados pelo script de preparação.
+ * Cria uma CA de teste em memória: não depende de nenhum ficheiro.
  */
 public final class TesteCertificados {
 
-    public static void main(String[] args) throws Exception {
-        byte[] joao = lerPem("certificados/publicos/joao.crt");
-        byte[] relay = lerPem("certificados/publicos/relay.crt");
-        byte[] ca = lerPem("certificados/publicos/ca-grupo09.crt");
+    private static final Duration ANO = Duration.ofDays(365);
 
-        ValidacaoCertificado.validarUtilizador(joao, "joao");
+    public static void main(String[] args) throws Exception {
+        KeyPairGenerator gerador = KeyPairGenerator.getInstance("RSA");
+        gerador.initialize(3072);
+
+        KeyPair chavesCA = gerador.generateKeyPair();
+        X509Certificate ca = CertificadoX509.criarCA(chavesCA, "CA Teste", ANO);
+
+        X509Certificate joao = CertificadoX509.emitir(ca, chavesCA.getPrivate(),
+                gerador.generateKeyPair().getPublic(), "joao",
+                CertificadoX509.Tipo.CLIENTE, ANO);
+        X509Certificate relay = CertificadoX509.emitir(ca, chavesCA.getPrivate(),
+                gerador.generateKeyPair().getPublic(), "localhost",
+                CertificadoX509.Tipo.SERVIDOR, ANO);
+
+        // Outra CA, com o mesmo nome: um atacante que cria a sua própria CA.
+        KeyPair chavesFalsa = gerador.generateKeyPair();
+        X509Certificate caFalsa =
+                CertificadoX509.criarCA(chavesFalsa, "CA Teste", ANO);
+        X509Certificate joaoFalso = CertificadoX509.emitir(caFalsa,
+                chavesFalsa.getPrivate(), gerador.generateKeyPair().getPublic(),
+                "joao", CertificadoX509.Tipo.CLIENTE, ANO);
+
+        ValidacaoCertificado.validarUtilizador(joao.getEncoded(), "joao", ca);
         System.out.println("OK — certificado do joao aceite para joao.");
 
         // Um relay malicioso devolve um certificado válido de outra pessoa.
-        rejeitar(joao, "cristiano",
+        rejeitar(joao.getEncoded(), "cristiano", ca,
                 "certificado de outro utilizador rejeitado");
 
         // Certificado de servidor (EKU serverAuth) usado como utilizador.
-        rejeitar(relay, "localhost",
+        rejeitar(relay.getEncoded(), "localhost", ca,
                 "certificado do relay rejeitado como utilizador");
 
         // O certificado da própria CA não serve de identidade.
-        rejeitar(ca, "ca", "certificado da CA rejeitado como utilizador");
+        rejeitar(ca.getEncoded(), "ca", ca,
+                "certificado da CA rejeitado como utilizador");
 
-        // Bytes que não formam um certificado.
-        byte[] lixo = joao.clone();
+        // Mesmo nome, mesma estrutura, mas emitido por outra CA.
+        rejeitar(joaoFalso.getEncoded(), "joao", ca,
+                "certificado de outra CA rejeitado");
+
+        // Bytes alterados.
+        byte[] lixo = joao.getEncoded();
         lixo[lixo.length / 2] ^= 1;
-        rejeitar(lixo, "joao", "certificado adulterado rejeitado");
+        rejeitar(lixo, "joao", ca, "certificado adulterado rejeitado");
     }
 
-    private static void rejeitar(byte[] dados, String nome, String caso) {
+    private static void rejeitar(byte[] dados, String nome,
+            X509Certificate ca, String caso) {
         try {
-            ValidacaoCertificado.validarUtilizador(dados, nome);
+            ValidacaoCertificado.validarUtilizador(dados, nome, ca);
         } catch (Exception esperado) {
             System.out.println("OK — " + caso + ".");
             return;
         }
         throw new AssertionError("Aceite indevidamente: " + caso);
-    }
-
-    private static byte[] lerPem(String caminho) throws Exception {
-        String pem = Files.readString(Path.of(caminho));
-        return Base64.getMimeDecoder().decode(
-                pem.replaceAll("-----[A-Z ]+-----", ""));
     }
 }

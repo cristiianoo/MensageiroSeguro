@@ -6,20 +6,17 @@ import java.util.Arrays;
 
 import pt.ua.estga.mensageiro.seguranca.ConfiguracaoTLS;
 
-/** Cliente de consola. A lógica de segurança está em SessaoCliente. */
+/**
+ * Cliente de consola. A lógica de segurança está em SessaoCliente.
+ *
+ * Utilização: Cliente [nome]
+ */
 public final class Cliente {
 
     private Cliente() {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 1
-                || !SessaoCliente.UTILIZADORES.contains(args[0])) {
-            System.err.println("Utilização: Cliente <joao|cristiano>");
-            return;
-        }
-
-        String utilizador = args[0];
         Console consola = System.console();
 
         if (consola == null) {
@@ -27,16 +24,35 @@ public final class Cliente {
                     "Executa o cliente num Terminal interativo.");
         }
 
-        char[] passeIdentidade = consola.readPassword(
-                "Palavra-passe da identidade de %s: ", utilizador);
-        char[] passeConfianca = consola.readPassword(
-                "Palavra-passe do ficheiro de confiança: ");
+        String utilizador = args.length == 1
+                ? args[0]
+                : consola.readLine("Nome de utilizador: ");
 
-        if (passeIdentidade == null || passeConfianca == null) {
-            if (passeIdentidade != null) {
-                Arrays.fill(passeIdentidade, '\0');
+        if (utilizador == null || utilizador.isBlank()) {
+            return;
+        }
+        utilizador = utilizador.strip();
+
+        char[] palavraPasse;
+
+        if (Contas.existe(utilizador)) {
+            palavraPasse = consola.readPassword("Palavra-passe: ");
+        } else {
+            String resposta = consola.readLine("Não existe a conta %s neste "
+                    + "computador. Criar conta nova? (s/n) ", utilizador);
+
+            if (resposta == null || !resposta.strip().equalsIgnoreCase("s")) {
+                return;
             }
-            throw new IllegalStateException("Leitura cancelada.");
+
+            palavraPasse = criarConta(consola, utilizador);
+            if (palavraPasse == null) {
+                return;
+            }
+        }
+
+        if (palavraPasse == null) {
+            return;
         }
 
         SessaoCliente.Ouvinte ouvinte = new SessaoCliente.Ouvinte() {
@@ -60,14 +76,17 @@ public final class Cliente {
         SessaoCliente sessao;
 
         try {
-            sessao = SessaoCliente.ligar(
-                    utilizador, passeIdentidade, passeConfianca, ouvinte);
+            sessao = SessaoCliente.ligar(utilizador, palavraPasse, ouvinte);
         } catch (SessaoCliente.RelayRejeitado erro) {
             System.err.println(erro.getMessage());
             System.err.println("Detalhe: " + erro.getCause().getMessage());
             return;
         } catch (ConfiguracaoTLS.PalavraPasseIncorreta erro) {
-            System.err.println(erro.getMessage());
+            System.err.println("Palavra-passe incorreta.");
+            return;
+        } catch (java.net.ConnectException erro) {
+            System.err.println("Não foi possível ligar ao relay. "
+                    + "Está a correr?");
             return;
         }
 
@@ -81,6 +100,41 @@ public final class Cliente {
             System.out.println(sessao.levantar());
 
             executar(sessao, consola);
+        }
+    }
+
+    /** Devolve a palavra-passe da conta criada, ou null se falhar. */
+    private static char[] criarConta(Console consola, String nome) {
+        char[] palavraPasse = consola.readPassword(
+                "Escolhe uma palavra-passe (mínimo %d caracteres): ",
+                Contas.MINIMO_PALAVRA_PASSE);
+        char[] repetida = consola.readPassword("Repete a palavra-passe: ");
+
+        try {
+            if (palavraPasse == null || repetida == null) {
+                return null;
+            }
+            if (!Arrays.equals(palavraPasse, repetida)) {
+                System.err.println("As palavras-passe não coincidem.");
+                Arrays.fill(palavraPasse, '\0');
+                return null;
+            }
+
+            System.out.println("A criar a conta (gerar chaves e pedir "
+                    + "o certificado à Autoridade)…");
+            Contas.criar(nome, palavraPasse);
+            System.out.println("Conta " + nome + " criada.");
+            return palavraPasse;
+
+        } catch (Exception erro) {
+            System.err.println("Não foi possível criar a conta: "
+                    + erro.getMessage());
+            Arrays.fill(palavraPasse, '\0');
+            return null;
+        } finally {
+            if (repetida != null) {
+                Arrays.fill(repetida, '\0');
+            }
         }
     }
 

@@ -1,7 +1,6 @@
 package pt.ua.estga.mensageiro.relay;
 
 import java.io.ByteArrayInputStream;
-import java.io.Console;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
@@ -29,8 +28,11 @@ import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLSocket;
 
 import pt.ua.estga.mensageiro.protocolo.Protocolo;
+import pt.ua.estga.mensageiro.seguranca.ArmazemChaves;
+import pt.ua.estga.mensageiro.seguranca.Caminhos;
 import pt.ua.estga.mensageiro.seguranca.ConfiguracaoTLS;
 import pt.ua.estga.mensageiro.seguranca.IdentidadeLocal;
+import pt.ua.estga.mensageiro.seguranca.ValidacaoCertificado;
 
 public final class Relay {
 
@@ -47,49 +49,29 @@ public final class Relay {
     private static RegistoAuditoria auditoria;
 
     public static void main(String[] args) throws Exception {
-        Console consola = System.console();
-
-        if (consola == null) {
-            throw new IllegalStateException(
-                    "Executa o relay num Terminal interativo.");
+        if (!Files.exists(Caminhos.RELAY_SEGREDO)) {
+            System.err.println("O relay ainda não tem identidade. Arranca "
+                    + "primeiro a Autoridade: no primeiro arranque cria a CA "
+                    + "e a identidade do relay.");
+            System.exit(1);
         }
 
-        char[] passeIdentidade = consola.readPassword(
-                "Palavra-passe da identidade do relay: ");
-        char[] passeConfianca = consola.readPassword(
-                "Palavra-passe do ficheiro de confiança: ");
+        // Arranque sem perguntas: o segredo do PKCS12 está num ficheiro
+        // só legível pelo dono (limitação documentada: quem lê o disco
+        // do relay fica com a chave do relay).
+        char[] segredo = ArmazemChaves.lerSegredo(Caminhos.RELAY_SEGREDO);
 
         SSLContext contexto;
         IdentidadeLocal identidadeRelay;
 
         try {
-            if (passeIdentidade == null || passeConfianca == null) {
-                throw new IllegalStateException("Leitura cancelada.");
-            }
-
-            Path ficheiroIdentidade =
-                    Path.of("certificados/identidades/relay.p12");
-
-            contexto = ConfiguracaoTLS.criarContexto(
-                    ficheiroIdentidade,
-                    passeIdentidade,
-                    Path.of("certificados/confianca/confianca.p12"),
-                    passeConfianca);
+            contexto = ConfiguracaoTLS.criarContexto(Caminhos.RELAY, segredo);
 
             // A mesma chave assina os pontos de controlo da auditoria.
             identidadeRelay = IdentidadeLocal.carregar(
-                    ficheiroIdentidade, passeIdentidade, "relay");
-        } catch (ConfiguracaoTLS.PalavraPasseIncorreta erro) {
-            System.err.println(erro.getMessage());
-            System.exit(1);
-            return;
+                    Caminhos.RELAY, segredo, "relay");
         } finally {
-            if (passeIdentidade != null) {
-                Arrays.fill(passeIdentidade, '\0');
-            }
-            if (passeConfianca != null) {
-                Arrays.fill(passeConfianca, '\0');
-            }
+            Arrays.fill(segredo, '\0');
         }
 
         carregarDiretorio();
@@ -127,7 +109,8 @@ public final class Relay {
 
         try (SSLServerSocket servidor = (SSLServerSocket)
                     contexto.getServerSocketFactory().createServerSocket(
-                            8443, 50, InetAddress.getLoopbackAddress());
+                            Caminhos.PORTA_RELAY, 50,
+                            InetAddress.getLoopbackAddress());
              ExecutorService tarefas =
                     Executors.newVirtualThreadPerTaskExecutor()) {
 
@@ -336,7 +319,21 @@ public final class Relay {
                         fabrica.generateCertificate(new ByteArrayInputStream(
                                 Files.readAllBytes(ficheiro)));
 
-                utilizadores.put(obterIdentidade(certificado), certificado);
+                String identidade = obterIdentidade(certificado);
+
+                try {
+                    // Certificados de uma CA anterior (ou expirados) não
+                    // podem continuar a ocupar o nome.
+                    ValidacaoCertificado.validarUtilizador(
+                            certificado.getEncoded(), identidade);
+                } catch (Exception invalido) {
+                    System.out.println("Ignorado no diretório: " + identidade
+                            + " (" + invalido.getMessage() + ")");
+                    Files.delete(ficheiro);
+                    continue;
+                }
+
+                utilizadores.put(identidade, certificado);
             }
         }
 

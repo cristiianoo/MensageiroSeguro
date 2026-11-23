@@ -14,6 +14,7 @@ import java.security.MessageDigest;
 import java.security.cert.X509Certificate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -28,7 +29,7 @@ import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.DefaultListModel;
 import javax.swing.JButton;
-import javax.swing.JComboBox;
+import javax.swing.JCheckBox;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JFrame;
@@ -45,6 +46,8 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 
+import pt.ua.estga.mensageiro.seguranca.ConfiguracaoTLS;
+
 /**
  * Interface gráfica do cliente (Swing, só JDK).
  *
@@ -52,7 +55,7 @@ import javax.swing.UIManager;
  * Regras: pedidos ao relay nunca correm na thread da interface,
  * e o texto vindo da rede só é mostrado em componentes sem HTML.
  *
- * Utilização: ClienteGUI [joao|cristiano]
+ * Utilização: ClienteGUI [nome]
  */
 public final class ClienteGUI implements SessaoCliente.Ouvinte {
 
@@ -75,6 +78,7 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
     private final JTextField campoTexto = new JTextField();
     private final JButton botaoEnviar = new JButton("Enviar");
     private final JButton botaoLevantar = new JButton("Levantar");
+    private final JButton botaoAdicionar = new JButton("+ Contacto");
     private final JLabel estado = semHtml(new JLabel(" "));
 
     // Só acedidos na thread da interface.
@@ -97,7 +101,7 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
                 // Fica o aspeto por omissão do Swing.
             }
 
-            new ClienteGUI().pedirCredenciais(sugerido, null);
+            new ClienteGUI().pedirCredenciais(sugerido, false, null);
         });
     }
 
@@ -105,15 +109,21 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
     // Entrada
     // ------------------------------------------------------------------
 
-    private void pedirCredenciais(String sugerido, String erroAnterior) {
-        JComboBox<String> escolha = new JComboBox<>(
-                SessaoCliente.UTILIZADORES.toArray(String[]::new));
-        if (sugerido != null) {
-            escolha.setSelectedItem(sugerido);
-        }
+    private void pedirCredenciais(String sugerido, boolean criarSugerido,
+            String erroAnterior) {
 
-        JPasswordField passeIdentidade = new JPasswordField(18);
-        JPasswordField passeConfianca = new JPasswordField(18);
+        JTextField campoNome = new JTextField(sugerido == null ? "" : sugerido, 18);
+        JPasswordField campoPasse = new JPasswordField(18);
+        JPasswordField campoRepetir = new JPasswordField(18);
+        JCheckBox criar = new JCheckBox("Criar conta nova", criarSugerido);
+        JLabel rotuloRepetir = new JLabel("Repetir palavra-passe:");
+
+        Runnable atualizar = () -> {
+            campoRepetir.setEnabled(criar.isSelected());
+            rotuloRepetir.setEnabled(criar.isSelected());
+        };
+        criar.addActionListener(e -> atualizar.run());
+        atualizar.run();
 
         JPanel painel = new JPanel(new GridBagLayout());
         GridBagConstraints g = new GridBagConstraints();
@@ -131,17 +141,23 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
             g.gridwidth = 1;
         }
 
-        adicionarCampo(painel, g, linha++, "Utilizador:", escolha);
-        adicionarCampo(painel, g, linha++, "Palavra-passe da identidade:",
-                passeIdentidade);
-        adicionarCampo(painel, g, linha, "Palavra-passe da confiança:",
-                passeConfianca);
+        adicionarCampo(painel, g, linha++, new JLabel("Nome de utilizador:"),
+                campoNome);
+        adicionarCampo(painel, g, linha++, new JLabel("Palavra-passe:"),
+                campoPasse);
+        adicionarCampo(painel, g, linha++, rotuloRepetir, campoRepetir);
+        g.gridx = 1;
+        g.gridy = linha;
+        painel.add(criar, g);
 
         JOptionPane pergunta = new JOptionPane(painel,
                 JOptionPane.PLAIN_MESSAGE, JOptionPane.OK_CANCEL_OPTION);
         JDialog dialogo = pergunta.createDialog("Mensageiro Seguro: entrar");
 
-        // O JOptionPane põe o foco no OK; passamos para a palavra-passe.
+        // O JOptionPane põe o foco no OK; passamos para o primeiro campo
+        // por preencher.
+        JComponent primeiro = campoNome.getText().isEmpty()
+                ? campoNome : campoPasse;
         dialogo.addWindowFocusListener(new WindowAdapter() {
             private boolean primeira = true;
 
@@ -149,7 +165,7 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
             public void windowGainedFocus(WindowEvent e) {
                 if (primeira) {
                     primeira = false;
-                    passeIdentidade.requestFocusInWindow();
+                    primeiro.requestFocusInWindow();
                 }
             }
         });
@@ -160,33 +176,75 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
         int opcao = pergunta.getValue() instanceof Integer valor
                 ? valor : JOptionPane.CLOSED_OPTION;
 
-        // getPassword devolve uma cópia em char[]; o campo é limpo já.
-        char[] identidade = passeIdentidade.getPassword();
-        char[] confianca = passeConfianca.getPassword();
-        passeIdentidade.setText("");
-        passeConfianca.setText("");
+        // getPassword devolve uma cópia em char[]; os campos são limpos já.
+        char[] palavraPasse = campoPasse.getPassword();
+        char[] repetida = campoRepetir.getPassword();
+        campoPasse.setText("");
+        campoRepetir.setText("");
+
+        String utilizador = campoNome.getText().strip();
+        boolean contaNova = criar.isSelected();
+        boolean iguais = Arrays.equals(palavraPasse, repetida);
+        Arrays.fill(repetida, '\0');
 
         if (opcao != JOptionPane.OK_OPTION) {
-            java.util.Arrays.fill(identidade, '\0');
-            java.util.Arrays.fill(confianca, '\0');
+            Arrays.fill(palavraPasse, '\0');
             System.exit(0);
         }
 
-        String utilizador = (String) escolha.getSelectedItem();
+        String problema = null;
+        if (utilizador.isEmpty() || palavraPasse.length == 0) {
+            problema = "Preenche o nome e a palavra-passe.";
+        } else if (contaNova && !iguais) {
+            problema = "As palavras-passe não coincidem.";
+        } else if (!contaNova && !Contas.existe(utilizador)) {
+            problema = "Não existe a conta " + utilizador
+                    + " neste computador. Marca «Criar conta nova».";
+        }
 
-        // A ligação (TLS, leitura do PKCS12) não pode bloquear a interface.
+        if (problema != null) {
+            Arrays.fill(palavraPasse, '\0');
+            pedirCredenciais(utilizador, contaNova, problema);
+            return;
+        }
+
+        // Uma janela visível durante a espera: sem nenhuma, o AWT
+        // termina o programa enquanto as chaves ainda estão a ser geradas.
+        JDialog aguarde = new JDialog((JFrame) null, "Mensageiro Seguro");
+        JLabel textoAguarde = new JLabel(contaNova
+                ? "A criar a conta: a gerar as chaves e a pedir o certificado…"
+                : "A abrir a conta e a ligar ao relay…");
+        textoAguarde.setBorder(BorderFactory.createEmptyBorder(16, 20, 16, 20));
+        aguarde.add(textoAguarde);
+        aguarde.pack();
+        aguarde.setLocationRelativeTo(null);
+        aguarde.setVisible(true);
+
+        // Gerar chaves, TLS e ler o PKCS12 não podem bloquear a interface.
         fundo.submit(() -> {
+            boolean criada = false;
             try {
-                // ligar apaga as palavras-passe antes de retornar.
-                SessaoCliente nova = SessaoCliente.ligar(
-                        utilizador, identidade, confianca, this);
+                if (contaNova) {
+                    Contas.criar(utilizador, palavraPasse);
+                    criada = true;
+                }
+
+                // ligar apaga a palavra-passe antes de retornar.
+                SessaoCliente nova =
+                        SessaoCliente.ligar(utilizador, palavraPasse, this);
                 sessao = nova;
 
                 String protocolo = nova.protocolo();
                 String registo = nova.registar();
+                boolean foiCriada = criada;
 
                 SwingUtilities.invokeLater(() -> {
                     abrirJanela(utilizador);
+                    aguarde.dispose();
+                    if (foiCriada) {
+                        evento("Conta criada: chaves geradas neste computador "
+                                + "e certificado emitido pela Autoridade.");
+                    }
                     evento("Ligação TLS estabelecida: " + protocolo
                             + " (autenticação mútua)");
                     evento(registo);
@@ -200,28 +258,36 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
 
             } catch (SessaoCliente.RelayRejeitado erro) {
                 SwingUtilities.invokeLater(() -> {
+                    aguarde.dispose();
                     JOptionPane.showMessageDialog(null,
                             semHtml(new JLabel(erro.getMessage())),
                             "Relay rejeitado", JOptionPane.ERROR_MESSAGE);
                     System.exit(1);
                 });
             } catch (Exception erro) {
+                Arrays.fill(palavraPasse, '\0');
                 SessaoCliente aberta = sessao;
                 if (aberta != null) {
                     aberta.close();
                     sessao = null;
                 }
-                SwingUtilities.invokeLater(() ->
-                        pedirCredenciais(utilizador, descrever(erro)));
+                // Se a conta já foi criada, a próxima tentativa é entrar.
+                boolean voltarACriar = contaNova && !criada;
+                SwingUtilities.invokeLater(() -> {
+                    // Na mesma tarefa da interface: o diálogo abre logo
+                    // a seguir, por isso nunca ficamos sem janelas.
+                    aguarde.dispose();
+                    pedirCredenciais(utilizador, voltarACriar, descrever(erro));
+                });
             }
         });
     }
 
     private static void adicionarCampo(JPanel painel, GridBagConstraints g,
-            int linha, String rotulo, JComponent campo) {
+            int linha, JLabel rotulo, JComponent campo) {
         g.gridx = 0;
         g.gridy = linha;
-        painel.add(new JLabel(rotulo), g);
+        painel.add(rotulo, g);
         g.gridx = 1;
         painel.add(campo, g);
     }
@@ -240,10 +306,8 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
             }
         });
 
-        for (String nome : SessaoCliente.UTILIZADORES) {
-            if (!nome.equals(utilizador)) {
-                contactos.addElement(nome);
-            }
+        for (String nome : Contas.contactos(utilizador)) {
+            contactos.addElement(nome);
         }
 
         listaContactos.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -255,12 +319,16 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
         });
 
         botaoLevantar.addActionListener(e -> levantar());
+        botaoAdicionar.addActionListener(e -> adicionarContacto());
 
         JPanel esquerda = new JPanel(new BorderLayout(0, 6));
         esquerda.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 4));
         esquerda.add(new JLabel("Contactos"), BorderLayout.NORTH);
         esquerda.add(new JScrollPane(listaContactos), BorderLayout.CENTER);
-        esquerda.add(botaoLevantar, BorderLayout.SOUTH);
+        JPanel botoes = new JPanel(new java.awt.GridLayout(2, 1, 0, 6));
+        botoes.add(botaoAdicionar);
+        botoes.add(botaoLevantar);
+        esquerda.add(botoes, BorderLayout.SOUTH);
         esquerda.setPreferredSize(new Dimension(170, 0));
 
         campoTexto.addActionListener(e -> enviar());
@@ -302,8 +370,47 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
         definirEscritaAtiva(false);
         janela.setVisible(true);
 
-        if (!contactos.isEmpty()) {
+        if (contactos.isEmpty()) {
+            cabecalho.setText("Ainda não tens contactos: "
+                    + "usa «+ Contacto» e escreve o nome de alguém.");
+        } else {
             listaContactos.setSelectedIndex(0);
+        }
+    }
+
+    /** Pede um nome e só o junta se o relay tiver um certificado válido. */
+    private void adicionarContacto() {
+        String nome = JOptionPane.showInputDialog(janela,
+                "Nome de utilizador do contacto:", "Adicionar contacto",
+                JOptionPane.PLAIN_MESSAGE);
+
+        if (nome == null || nome.isBlank()) {
+            return;
+        }
+        String contacto = nome.strip().toLowerCase();
+
+        if (contacto.equals(sessao.utilizador())) {
+            evento("Não te podes adicionar a ti próprio.");
+            return;
+        }
+
+        emFundo(() -> sessao.procurar(contacto), certificado -> {
+            juntarContacto(contacto);
+            listaContactos.setSelectedValue(contacto, true);
+            evento("Contacto adicionado: " + contacto
+                    + " (certificado validado pela CA).");
+        }, erro -> evento("Não foi possível adicionar " + contacto + ": "
+                + descrever(erro)));
+    }
+
+    private void juntarContacto(String contacto) {
+        if (!contactos.contains(contacto)) {
+            contactos.addElement(contacto);
+        }
+        try {
+            Contas.adicionarContacto(sessao.utilizador(), contacto);
+        } catch (java.io.IOException erro) {
+            evento("Não foi possível guardar o contacto: " + erro.getMessage());
         }
     }
 
@@ -382,9 +489,9 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
     @Override
     public void mensagemVerificada(String remetente, String texto) {
         SwingUtilities.invokeLater(() -> {
-            if (!contactos.contains(remetente)) {
-                contactos.addElement(remetente);
-            }
+            // Só chegamos aqui com a assinatura verificada: o remetente
+            // é mesmo quem diz ser, por isso pode entrar nos contactos.
+            juntarContacto(remetente);
             acrescentar(remetente, remetente, texto);
             evento("Mensagem de " + remetente
                     + ": assinatura verificada e conteúdo decifrado.");
@@ -479,8 +586,8 @@ public final class ClienteGUI implements SessaoCliente.Ouvinte {
         if (mensagem == null || mensagem.isBlank()) {
             return erro.getClass().getSimpleName();
         }
-        if (mensagem.contains("password") || mensagem.contains("keystore")) {
-            return "Palavra-passe incorreta ou ficheiro PKCS12 inválido.";
+        if (erro instanceof ConfiguracaoTLS.PalavraPasseIncorreta) {
+            return "Palavra-passe incorreta.";
         }
         if (erro instanceof java.net.ConnectException) {
             return "Não foi possível ligar ao relay em localhost:8443.";

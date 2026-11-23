@@ -1,0 +1,8 @@
+# bash scripts/testar-contas.sh (2026-11-23)
+OK — pedido válido aceite.
+OK — prova de posse com outra chave rejeitada.
+OK — nome alterado depois de assinado rejeitado.
+OK — chave de 2048 bits rejeitada.
+OK — nome reservado rejeitado.
+OK — nome com caracteres inválidos rejeitado.
+OK — assinatura adulterada rejeitada.

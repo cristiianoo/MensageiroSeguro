@@ -1,5 +1,7 @@
+# bash scripts/testar-certificados.sh (2026-11-23) — CA de teste gerada em memória
 OK — certificado do joao aceite para joao.
 OK — certificado de outro utilizador rejeitado.
 OK — certificado do relay rejeitado como utilizador.
 OK — certificado da CA rejeitado como utilizador.
+OK — certificado de outra CA rejeitado.
 OK — certificado adulterado rejeitado.

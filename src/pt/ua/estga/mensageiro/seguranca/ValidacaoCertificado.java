@@ -1,9 +1,6 @@
 package pt.ua.estga.mensageiro.seguranca;
 
 import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.cert.CertPath;
 import java.security.cert.CertPathValidator;
 import java.security.cert.CertificateFactory;
@@ -24,6 +21,15 @@ public final class ValidacaoCertificado {
     public static X509Certificate validarUtilizador(
             byte[] dados, String identidadeEsperada) throws Exception {
 
+        // A CA é configurada localmente, não vem do relay.
+        return validarUtilizador(
+                dados, identidadeEsperada, ConfiguracaoTLS.lerCA());
+    }
+
+    public static X509Certificate validarUtilizador(
+            byte[] dados, String identidadeEsperada, X509Certificate ca)
+            throws Exception {
+
         CertificateFactory fabrica =
                 CertificateFactory.getInstance("X.509");
 
@@ -38,14 +44,6 @@ public final class ValidacaoCertificado {
                 throw new IllegalArgumentException(
                         "Dados adicionais depois do certificado.");
             }
-        }
-
-        X509Certificate ca;
-
-        // A CA é configurada localmente, não vem do relay.
-        try (InputStream entrada = Files.newInputStream(
-                Path.of("certificados/publicos/ca-grupo09.crt"))) {
-            ca = (X509Certificate) fabrica.generateCertificate(entrada);
         }
 
         ca.checkValidity();

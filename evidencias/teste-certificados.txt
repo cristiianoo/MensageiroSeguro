@@ -1,0 +1,5 @@
+OK — certificado do joao aceite para joao.
+OK — certificado de outro utilizador rejeitado.
+OK — certificado do relay rejeitado como utilizador.
+OK — certificado da CA rejeitado como utilizador.
+OK — certificado adulterado rejeitado.

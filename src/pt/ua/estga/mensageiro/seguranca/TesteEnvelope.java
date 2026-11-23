@@ -149,5 +149,68 @@ public final class TesteEnvelope {
         } catch (GeneralSecurityException esperado) {
             System.out.println("OK — chave privada diferente rejeitada.");
         }
+
+        // Ataque de ordem: um terceiro remove a assinatura do João e
+        // assina o mesmo corpo com a sua chave, para parecer o autor.
+        // O relay indicaria "mallory" como remetente da sessão TLS.
+        byte[] reassinado = reassinar(envelope, terceiro);
+
+        try {
+            EnvelopeSeguro.abrir(
+                    reassinado,
+                    "mallory",
+                    "cristiano",
+                    terceiro.getPublic(),
+                    cristiano.getPrivate());
+
+            throw new AssertionError("O envelope reassinado foi aceite.");
+        } catch (GeneralSecurityException esperado) {
+            System.out.println(
+                    "OK — corpo reassinado por terceiro rejeitado.");
+        }
+
+        // Ataque de ordem: o envelope do João para o Cristiano é
+        // reencaminhado a outra pessoa como se lhe fosse dirigido.
+        try {
+            EnvelopeSeguro.abrir(
+                    envelope,
+                    "joao",
+                    "ana",
+                    joao.getPublic(),
+                    terceiro.getPrivate());
+
+            throw new AssertionError("O envelope reencaminhado foi aceite.");
+        } catch (GeneralSecurityException esperado) {
+            System.out.println(
+                    "OK — envelope reencaminhado a outro destinatário rejeitado.");
+        }
+    }
+
+    /** Substitui a assinatura do envelope pela de outra chave. */
+    private static byte[] reassinar(byte[] envelope, KeyPair atacante)
+            throws Exception {
+
+        java.nio.ByteBuffer entrada = java.nio.ByteBuffer.wrap(envelope);
+        byte[] corpo = new byte[entrada.getInt()];
+        entrada.get(corpo);
+
+        java.security.Signature assinatura =
+                java.security.Signature.getInstance("SHA256withRSA");
+        assinatura.initSign(atacante.getPrivate());
+        assinatura.update(corpo);
+        byte[] novaAssinatura = assinatura.sign();
+
+        java.io.ByteArrayOutputStream bytes =
+                new java.io.ByteArrayOutputStream();
+
+        try (java.io.DataOutputStream saida =
+                new java.io.DataOutputStream(bytes)) {
+            saida.writeInt(corpo.length);
+            saida.write(corpo);
+            saida.writeInt(novaAssinatura.length);
+            saida.write(novaAssinatura);
+        }
+
+        return bytes.toByteArray();
     }
 }

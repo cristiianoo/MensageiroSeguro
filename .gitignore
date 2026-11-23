@@ -1,28 +1,34 @@
-# IntelliJ IDEA
-.idea/
-*.iml
-
-# Java
+# Compilados Java
 out/
 target/
 *.class
 
-# Sistema operativo
-.DS_Store
-Thumbs.db
-# Identidades e segredos gerados localmente
+# Certificados, chaves privadas e segredos gerados localmente
 certificados/
 *.p12
 *.pfx
 *.jks
+*.crt
 *.pem
+*.keys
 .env
 .env.*
 
-# Ficheiros de compilação e pacotes
-out/
-*.class
+# Dados do relay (mensagens guardadas, diretório, registo de auditoria)
+dados-relay/
+
+# Pacotes de entrega
 *.zip
 
-# Ficheiros do macOS
+# Configuração local do IntelliJ IDEA
+.idea/
+*.iml
+
+# Ficheiros de sistema (macOS / Linux / Windows)
 .DS_Store
+Thumbs.db
+
+# Ficheiros temporários do Word/LibreOffice
+~$*.docx
+~$*.odt
+.~lock.*

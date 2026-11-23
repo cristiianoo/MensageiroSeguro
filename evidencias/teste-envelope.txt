@@ -4,3 +4,5 @@ OK — envelope adulterado rejeitado.
 OK — conteúdo cifrado alterado rejeitado.
 OK — metadados alterados rejeitados.
 OK — chave privada diferente rejeitada.
+OK — corpo reassinado por terceiro rejeitado.
+OK — envelope reencaminhado a outro destinatário rejeitado.

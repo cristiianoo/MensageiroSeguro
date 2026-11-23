@@ -29,7 +29,7 @@ public final class Cliente {
     private final IdentidadeLocal identidade;
     private final DataInputStream entrada;
     private final DataOutputStream saida;
-        private final SSLSocket ligacao;
+    private final SSLSocket ligacao;
 
     private final ArrayBlockingQueue<Protocolo.Mensagem> respostas =
             new ArrayBlockingQueue<>(16);
@@ -116,7 +116,17 @@ public final class Cliente {
 
             ligacao.connect(new InetSocketAddress("localhost", 8443), 5_000);
             ligacao.setSoTimeout(10_000);
-            ligacao.startHandshake();
+
+            try {
+                ligacao.startHandshake();
+            } catch (javax.net.ssl.SSLHandshakeException falhaTLS) {
+                // Demonstração do módulo A: relay falso ou não confiável.
+                System.err.println("Relay rejeitado: o certificado "
+                        + "apresentado não é válido para esta CA "
+                        + "ou para localhost.");
+                System.err.println("Detalhe: " + falhaTLS.getMessage());
+                return;
+            }
 
             System.out.println("Ligação TLS estabelecida: "
                     + ligacao.getSession().getProtocol());
@@ -142,7 +152,9 @@ public final class Cliente {
                 1,
                 0L,
                 TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(32),
+                // Acima do limite de 200 mensagens por caixa no relay:
+                // um levantamento completo não pode rejeitar entregas.
+                new ArrayBlockingQueue<>(256),
                 Thread.ofVirtual().factory(),
                 new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
 
@@ -179,8 +191,11 @@ public final class Cliente {
             exigirSucesso(registo);
             System.out.println(texto(registo));
 
-            System.out.println(
-                    "Comandos: procurar <nome>, enviar <nome>, sair");
+            // Ao ligar, recolhemos o que chegou enquanto estávamos fora.
+            levantar();
+
+            System.out.println("Comandos: procurar <nome>, enviar <nome>, "
+                    + "levantar, sair");
 
             while (ativa) {
                 String comando = consola.readLine("> ");
@@ -211,9 +226,12 @@ public final class Cliente {
                             enviarEnvelope(nome, mensagem, certificado);
                         }
 
+                    } else if (comando.equals("levantar")) {
+                        levantar();
+
                     } else {
-                        System.out.println(
-                                "Usa: procurar <nome>, enviar <nome> ou sair");
+                        System.out.println("Usa: procurar <nome>, "
+                                + "enviar <nome>, levantar ou sair");
                     }
                 } catch (Exception erro) {
                     System.err.println(
@@ -245,7 +263,7 @@ public final class Cliente {
 
             if (resposta == null) {
                 // Não reutilizamos uma sessão com respostas incertas.
-                ativa = false;
+                terminarLigacao();
                 throw new IllegalStateException(
                         "O relay não respondeu a tempo. Reinicia o cliente.");
             }
@@ -274,6 +292,16 @@ public final class Cliente {
 
         return ValidacaoCertificado.validarUtilizador(
                 resposta.dados(), nome);
+    }
+
+    private void levantar() throws Exception {
+        // As entregas chegam antes da resposta e seguem o caminho normal
+        // de verificação em receberEnvelope.
+        Protocolo.Mensagem resposta =
+                pedir(Protocolo.LEVANTAR, new byte[0]);
+
+        exigirSucesso(resposta);
+        System.out.println(texto(resposta));
     }
 
     private void enviarEnvelope(

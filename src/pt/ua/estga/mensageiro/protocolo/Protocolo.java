@@ -9,6 +9,8 @@ public final class Protocolo {
     public static final int REGISTAR = 1;
     public static final int PROCURAR = 2;
     public static final int ENVIAR = 3;
+    // Sem dados: a identidade vem sempre do certificado da sessão TLS.
+    public static final int LEVANTAR = 4;
     public static final int ENTREGA = 102;
 
     public static final int SUCESSO = 100;

@@ -1,0 +1,47 @@
+# Módulo C — verificação do registo de auditoria (2026-11-23, preparação de teste com certificados novos)
+
+## Registo usado
+E|1|2026-11-23T15:37:31Z|ARRANQUE||aef4b3d641e02d06ac0f21f6a76e8874fa008af5735445b703b7d9255e3a6da9…
+E|2|2026-11-23T15:37:36Z|REGISTO|cristiano|4bfc91b0dc6451025e61b1b58b56deb24012de5aab276d8873667112b…
+E|3|2026-11-23T15:37:36Z|LEVANTAMENTO|cristiano,0|e6922f10b456962a4481db3bb0e692b34cfe39f41a4bb83515…
+E|4|2026-11-23T15:37:40Z|REGISTO|joao|fd6070864b559d3efb5acbf08682423fe6dcaf2d0ff0ec91209439c8ced173…
+E|5|2026-11-23T15:37:41Z|LEVANTAMENTO|joao,0|c8bd98d395a3f44cbc635f29a7adedbfde5d21ad2474014c94bd56e…
+E|6|2026-11-23T15:37:45Z|ENVIO|joao,cristiano,GUARDADO|5139293bbcd6e96f2ab89141f40997317429669277a0b…
+E|7|2026-11-23T15:37:47Z|LEVANTAMENTO|joao,0|a591a82e0e518d5298942cb66f65163310aaa631927e42a6118cf33…
+E|8|2026-11-23T15:37:53Z|LEVANTAMENTO|cristiano,1|88dd3f2972ebec85d652ed42619cdc61233fbc418ce8cc2bb1…
+E|9|2026-11-23T15:37:58Z|PARAGEM||3e30752f7df89524677d63f82838a78d2986d2c857ae12a3a6dcbcfea03b8786…
+C|9|3e30752f7df89524677d63f82838a78d2986d2c857ae12a3a6dcbcfea03b8786|U4m3jZTUSjiTB0E2Fc3ZNLDiz0ubSrb…
+
+## scripts/testar-auditoria.sh
+== Registo original ==
+Cadeia íntegra: 9 entradas, 1 ponto de controlo assinado válido.
+Último ponto assinado: seq=9 (guarde este valor fora do relay para detetar truncagens futuras).
+-> OK (esperado 0)
+
+== Entrada alterada ==
+REGISTO INVÁLIDO na linha 2: hash não corresponde (entrada alterada)
+  > E|2|2026-11-23T15:37:36Z|ADULTERADO|cristiano|4bfc91b0dc6451025e61b1b58b56deb24012de5aab276d88736671…
+-> OK (esperado 1)
+
+== Entrada removida ==
+REGISTO INVÁLIDO na linha 2: esperada a entrada 2, encontrada a 3 (entrada removida ou reordenada)
+  > E|3|2026-11-23T15:37:36Z|LEVANTAMENTO|cristiano,0|e6922f10b456962a4481db3bb0e692b34cfe39f41a4bb83515…
+-> OK (esperado 1)
+
+== Entradas reordenadas ==
+REGISTO INVÁLIDO na linha 2: esperada a entrada 2, encontrada a 3 (entrada removida ou reordenada)
+  > E|3|2026-11-23T15:37:36Z|LEVANTAMENTO|cristiano,0|e6922f10b456962a4481db3bb0e692b34cfe39f41a4bb83515…
+-> OK (esperado 1)
+
+código do script: 0
+
+## Entrada 4 alterada (joao -> mallory) e cadeia SHA-256 recalculada sem a chave do relay
+REGISTO INVÁLIDO na linha 10: ponto de controlo não corresponde à cadeia
+  > C|9|3e30752f7df89524677d63f82838a78d2986d2c857ae12a3a6dcbcfea03b8786|U4m3jZTUSjiTB0E2Fc3ZNLDiz0ubSrb…
+código: 1
+
+## Truncagem das últimas 3 linhas, incluindo o ponto de controlo (limitação conhecida)
+Cadeia íntegra: 7 entradas, 0 pontos de controlo assinados válidos.
+AVISO: as entradas 1 a 7 ainda não estão cobertas por um ponto de controlo assinado.
+Último ponto assinado: seq=0 (guarde este valor fora do relay para detetar truncagens futuras).
+código: 0

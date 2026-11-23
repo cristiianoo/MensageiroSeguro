@@ -6,13 +6,27 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 import pt.ua.estga.mensageiro.protocolo.Protocolo;
 
 public final class SessoesRelay {
 
+    /** Resultado de um envio: entregue de imediato ou guardado. */
+    public enum Resultado { ENTREGUE, GUARDADO }
+
+    /** Pedido ENVIAR já validado. */
+    public record PedidoEnvio(String destinatario, byte[] entrega) {
+    }
+
     private final ConcurrentHashMap<String, DataOutputStream> ligacoes =
             new ConcurrentHashMap<>();
+
+    private final ArmazemMensagens armazem;
+
+    public SessoesRelay(ArmazemMensagens armazem) {
+        this.armazem = armazem;
+    }
 
     public boolean adicionar(String identidade, DataOutputStream saida) {
         // Nesta versão permitimos uma ligação por utilizador.
@@ -24,7 +38,11 @@ public final class SessoesRelay {
         ligacoes.remove(identidade, saida);
     }
 
-    public void encaminhar(String remetente, byte[] pedido)
+    /**
+     * Valida um pedido ENVIAR e prepara a trama ENTREGA.
+     * O remetente vem da sessão TLS autenticada, nunca do pedido.
+     */
+    public static PedidoEnvio interpretar(String remetente, byte[] pedido)
             throws IOException {
 
         String destinatario;
@@ -52,24 +70,58 @@ public final class SessoesRelay {
             }
         }
 
-        DataOutputStream destino = ligacoes.get(destinatario);
-
-        if (destino == null) {
-            throw new IOException("O destinatário não está ligado.");
-        }
-
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
         try (DataOutputStream entrega = new DataOutputStream(bytes)) {
-            // O remetente vem da sessão TLS autenticada.
             entrega.writeUTF(remetente);
             entrega.writeInt(envelope.length);
             entrega.write(envelope);
         }
 
+        return new PedidoEnvio(destinatario, bytes.toByteArray());
+    }
+
+    /**
+     * Entrega de imediato se o destinatário estiver ligado; caso contrário
+     * guarda para levantamento posterior.
+     *
+     * @param registado indica se o destinatário existe no diretório
+     */
+    public Resultado encaminhar(
+            PedidoEnvio pedido, Predicate<String> registado)
+            throws IOException {
+
+        // Não guardamos mensagens para quem nunca se registou.
+        if (!registado.test(pedido.destinatario())) {
+            throw new IOException("Destinatário desconhecido.");
+        }
+
+        DataOutputStream destino = ligacoes.get(pedido.destinatario());
+
+        if (destino != null) {
+            try {
+                enviarEntrega(destino, pedido.entrega());
+                return Resultado.ENTREGUE;
+            } catch (IOException ligacaoCaiu) {
+                // A ligação caiu entretanto: passamos a guardar.
+            }
+        }
+
+        armazem.guardar(pedido.destinatario(), pedido.entrega());
+        return Resultado.GUARDADO;
+    }
+
+    /** Entrega ao próprio utilizador as mensagens guardadas para ele. */
+    public int levantar(String identidade, DataOutputStream saida)
+            throws IOException {
+        return armazem.levantar(identidade,
+                entrega -> enviarEntrega(saida, entrega));
+    }
+
+    private static void enviarEntrega(DataOutputStream destino, byte[] dados)
+            throws IOException {
         synchronized (destino) {
-            Protocolo.enviar(destino, Protocolo.ENTREGA,
-                    bytes.toByteArray());
+            Protocolo.enviar(destino, Protocolo.ENTREGA, dados);
         }
     }
 }

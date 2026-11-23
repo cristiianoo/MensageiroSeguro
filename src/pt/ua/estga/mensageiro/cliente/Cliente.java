@@ -1,61 +1,20 @@
 package pt.ua.estga.mensageiro.cliente;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.Console;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.TimeUnit;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
-import javax.net.ssl.SSLSocket;
-
-import pt.ua.estga.mensageiro.protocolo.Protocolo;
 import pt.ua.estga.mensageiro.seguranca.ConfiguracaoTLS;
-import pt.ua.estga.mensageiro.seguranca.EnvelopeSeguro;
-import pt.ua.estga.mensageiro.seguranca.IdentidadeLocal;
-import pt.ua.estga.mensageiro.seguranca.ValidacaoCertificado;
 
+/** Cliente de consola. A lógica de segurança está em SessaoCliente. */
 public final class Cliente {
 
-    private final String utilizador;
-    private final IdentidadeLocal identidade;
-    private final DataInputStream entrada;
-    private final DataOutputStream saida;
-    private final SSLSocket ligacao;
-
-    private final ArrayBlockingQueue<Protocolo.Mensagem> respostas =
-            new ArrayBlockingQueue<>(16);
-
-    private final Object pedidos = new Object();
-
-    private volatile boolean ativa = true;
-
-    private Cliente(
-            String utilizador,
-            IdentidadeLocal identidade,
-            SSLSocket ligacao) throws Exception {
-
-        this.utilizador = utilizador;
-        this.identidade = identidade;
-        this.ligacao = ligacao;
-        
-        entrada = new DataInputStream(ligacao.getInputStream());
-        saida = new DataOutputStream(ligacao.getOutputStream());
-
+    private Cliente() {
     }
 
     public static void main(String[] args) throws Exception {
         if (args.length != 1
-                || !(args[0].equals("joao")
-                || args[0].equals("cristiano"))) {
+                || !SessaoCliente.UTILIZADORES.contains(args[0])) {
             System.err.println("Utilização: Cliente <joao|cristiano>");
             return;
         }
@@ -73,325 +32,99 @@ public final class Cliente {
         char[] passeConfianca = consola.readPassword(
                 "Palavra-passe do ficheiro de confiança: ");
 
-        SSLContext contexto;
-        IdentidadeLocal identidade;
-
-        try {
-            if (passeIdentidade == null || passeConfianca == null) {
-                throw new IllegalStateException("Leitura cancelada.");
-            }
-
-            Path ficheiro = Path.of(
-                    "certificados/identidades/" + utilizador + ".p12");
-
-            contexto = ConfiguracaoTLS.criarContexto(
-                    ficheiro,
-                    passeIdentidade,
-                    Path.of("certificados/confianca/confianca.p12"),
-                    passeConfianca);
-
-            identidade = IdentidadeLocal.carregar(
-                    ficheiro, passeIdentidade, utilizador);
-
-            // Confirmamos também a identidade carregada localmente.
-            ValidacaoCertificado.validarUtilizador(
-                    identidade.certificado().getEncoded(), utilizador);
-        } finally {
+        if (passeIdentidade == null || passeConfianca == null) {
             if (passeIdentidade != null) {
                 Arrays.fill(passeIdentidade, '\0');
             }
-            if (passeConfianca != null) {
-                Arrays.fill(passeConfianca, '\0');
-            }
+            throw new IllegalStateException("Leitura cancelada.");
         }
 
-        try (SSLSocket ligacao = (SSLSocket)
-                contexto.getSocketFactory().createSocket()) {
-
-            ligacao.setEnabledProtocols(new String[] {"TLSv1.3"});
-
-            SSLParameters parametros = ligacao.getSSLParameters();
-            parametros.setEndpointIdentificationAlgorithm("HTTPS");
-            ligacao.setSSLParameters(parametros);
-
-            ligacao.connect(new InetSocketAddress("localhost", 8443), 5_000);
-            ligacao.setSoTimeout(10_000);
-
-            try {
-                ligacao.startHandshake();
-            } catch (javax.net.ssl.SSLHandshakeException falhaTLS) {
-                // Demonstração do módulo A: relay falso ou não confiável.
-                System.err.println("Relay rejeitado: o certificado "
-                        + "apresentado não é válido para esta CA "
-                        + "ou para localhost.");
-                System.err.println("Detalhe: " + falhaTLS.getMessage());
-                return;
+        SessaoCliente.Ouvinte ouvinte = new SessaoCliente.Ouvinte() {
+            @Override
+            public void mensagemVerificada(String remetente, String texto) {
+                System.out.println("\nMensagem verificada de "
+                        + remetente + ": " + texto);
             }
 
-            System.out.println("Ligação TLS estabelecida: "
-                    + ligacao.getSession().getProtocol());
-
-            // A partir daqui podemos ficar à espera de mensagens.
-            ligacao.setSoTimeout(0);
-
-            Cliente cliente = new Cliente(
-                    utilizador, identidade, ligacao);
-
-            try {
-                cliente.executar(consola);
-            } finally {
-                cliente.ativa = false;
+            @Override
+            public void mensagemRejeitada(String motivo) {
+                System.err.println("\nMensagem rejeitada: " + motivo);
             }
-        }
-    }
 
-    private void executar(Console consola) throws Exception {
-        // Limitamos as mensagens que ficam à espera de verificação.
-        var entregas = new java.util.concurrent.ThreadPoolExecutor(
-                1,
-                1,
-                0L,
-                TimeUnit.MILLISECONDS,
-                // Acima do limite de 200 mensagens por caixa no relay:
-                // um levantamento completo não pode rejeitar entregas.
-                new ArrayBlockingQueue<>(256),
-                Thread.ofVirtual().factory(),
-                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
-
-        Thread leitor = Thread.ofVirtual().start(() -> {
-            try {
-                while (ativa) {
-                    Protocolo.Mensagem mensagem =
-                            Protocolo.receber(entrada);
-
-                    if (mensagem.tipo() == Protocolo.ENTREGA) {
-                        if (entregas.isShutdown()) {
-                            break;
-                        }
-
-                        entregas.submit(() -> receberEnvelope(mensagem));
-                    } else if (!respostas.offer(mensagem)) {
-                        throw new IllegalStateException(
-                                "Demasiadas respostas pendentes.");
-                    }
-                }
-            } catch (Exception erro) {
-                if (ativa) {
-                    System.err.println(
-                            "\nLigação terminada: " + erro.getMessage());
-                }
-                terminarLigacao();  
+            @Override
+            public void ligacaoTerminada(String motivo) {
+                System.err.println("\nLigação terminada: " + motivo);
             }
-        });
+        };
+
+        SessaoCliente sessao;
 
         try {
-            Protocolo.Mensagem registo =
-                    pedir(Protocolo.REGISTAR, new byte[0]);
+            sessao = SessaoCliente.ligar(
+                    utilizador, passeIdentidade, passeConfianca, ouvinte);
+        } catch (SessaoCliente.RelayRejeitado erro) {
+            System.err.println(erro.getMessage());
+            System.err.println("Detalhe: " + erro.getCause().getMessage());
+            return;
+        } catch (ConfiguracaoTLS.PalavraPasseIncorreta erro) {
+            System.err.println(erro.getMessage());
+            return;
+        }
 
-            exigirSucesso(registo);
-            System.out.println(texto(registo));
+        try (sessao) {
+            System.out.println("Ligação TLS estabelecida: "
+                    + sessao.protocolo());
+
+            System.out.println(sessao.registar());
 
             // Ao ligar, recolhemos o que chegou enquanto estávamos fora.
-            levantar();
+            System.out.println(sessao.levantar());
 
-            System.out.println("Comandos: procurar <nome>, enviar <nome>, "
-                    + "levantar, sair");
+            executar(sessao, consola);
+        }
+    }
 
-            while (ativa) {
-                String comando = consola.readLine("> ");
+    private static void executar(SessaoCliente sessao, Console consola) {
+        System.out.println("Comandos: procurar <nome>, enviar <nome>, "
+                + "levantar, sair");
 
-                if (comando == null || comando.equals("sair")) {
-                    break;
-                }
+        while (sessao.ativa()) {
+            String comando = consola.readLine("> ");
 
-                if (!ativa) {
-                    break;
-                }
+            if (comando == null || comando.equals("sair")
+                    || !sessao.ativa()) {
+                break;
+            }
 
-                try {
-                    if (comando.startsWith("procurar ")) {
-                        String nome = comando.substring(9).trim();
-                        X509Certificate certificado = procurar(nome);
+            try {
+                if (comando.startsWith("procurar ")) {
+                    X509Certificate certificado =
+                            sessao.procurar(comando.substring(9).trim());
 
-                        System.out.println("Certificado validado: "
-                                + certificado.getSubjectX500Principal()
-                                        .getName());
+                    System.out.println("Certificado validado: "
+                            + certificado.getSubjectX500Principal().getName());
 
-                    } else if (comando.startsWith("enviar ")) {
-                        String nome = comando.substring(7).trim();
-                        X509Certificate certificado = procurar(nome);
-                        String mensagem = consola.readLine("Mensagem: ");
+                } else if (comando.startsWith("enviar ")) {
+                    String nome = comando.substring(7).trim();
 
-                        if (mensagem != null && ativa) {
-                            enviarEnvelope(nome, mensagem, certificado);
-                        }
+                    // Validamos o destinatário antes de pedir o texto.
+                    sessao.procurar(nome);
+                    String mensagem = consola.readLine("Mensagem: ");
 
-                    } else if (comando.equals("levantar")) {
-                        levantar();
-
-                    } else {
-                        System.out.println("Usa: procurar <nome>, "
-                                + "enviar <nome>, levantar ou sair");
+                    if (mensagem != null && sessao.ativa()) {
+                        System.out.println(sessao.enviar(nome, mensagem));
                     }
-                } catch (Exception erro) {
-                    System.err.println(
-                            "Operação recusada: " + erro.getMessage());
+
+                } else if (comando.equals("levantar")) {
+                    System.out.println(sessao.levantar());
+
+                } else {
+                    System.out.println("Usa: procurar <nome>, "
+                            + "enviar <nome>, levantar ou sair");
                 }
+            } catch (Exception erro) {
+                System.err.println("Operação recusada: " + erro.getMessage());
             }
-        } finally {
-            terminarLigacao();
-            leitor.interrupt();
-            entregas.shutdownNow();
         }
-    }
-
-    private Protocolo.Mensagem pedir(int tipo, byte[] dados)
-            throws Exception {
-
-        // Só há um pedido em espera de resposta de cada vez.
-        synchronized (pedidos) {
-            if (!ativa) {
-                throw new IllegalStateException("A ligação está fechada.");
-            }
-
-            synchronized (saida) {
-                Protocolo.enviar(saida, tipo, dados);
-            }
-
-            Protocolo.Mensagem resposta =
-                    respostas.poll(15, TimeUnit.SECONDS);
-
-            if (resposta == null) {
-                // Não reutilizamos uma sessão com respostas incertas.
-                terminarLigacao();
-                throw new IllegalStateException(
-                        "O relay não respondeu a tempo. Reinicia o cliente.");
-            }
-
-            return resposta;
-        }
-    }
-
-    private X509Certificate procurar(String nome) throws Exception {
-        if (!nome.matches("[a-z0-9_-]{1,32}")) {
-            throw new IllegalArgumentException("Identificador inválido.");
-        }
-
-        Protocolo.Mensagem resposta = pedir(
-                Protocolo.PROCURAR,
-                nome.getBytes(StandardCharsets.UTF_8));
-
-        if (resposta.tipo() == Protocolo.ERRO) {
-            throw new IllegalStateException(texto(resposta));
-        }
-
-        if (resposta.tipo() != Protocolo.CERTIFICADO) {
-            throw new IllegalStateException(
-                    "Resposta inesperada à procura.");
-        }
-
-        return ValidacaoCertificado.validarUtilizador(
-                resposta.dados(), nome);
-    }
-
-    private void levantar() throws Exception {
-        // As entregas chegam antes da resposta e seguem o caminho normal
-        // de verificação em receberEnvelope.
-        Protocolo.Mensagem resposta =
-                pedir(Protocolo.LEVANTAR, new byte[0]);
-
-        exigirSucesso(resposta);
-        System.out.println(texto(resposta));
-    }
-
-    private void enviarEnvelope(
-            String destinatario,
-            String mensagem,
-            X509Certificate certificado) throws Exception {
-
-        byte[] envelope = EnvelopeSeguro.criar(
-                utilizador,
-                destinatario,
-                mensagem.getBytes(StandardCharsets.UTF_8),
-                identidade.chavePrivada(),
-                certificado.getPublicKey());
-
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-
-        try (DataOutputStream pedido = new DataOutputStream(bytes)) {
-            pedido.writeUTF(destinatario);
-            pedido.writeInt(envelope.length);
-            pedido.write(envelope);
-        }
-
-        Protocolo.Mensagem resposta =
-                pedir(Protocolo.ENVIAR, bytes.toByteArray());
-
-        exigirSucesso(resposta);
-        System.out.println(texto(resposta));
-    }
-
-    private void receberEnvelope(Protocolo.Mensagem entrega) {
-        try {
-            String remetente;
-            byte[] envelope;
-
-            try (DataInputStream dados = new DataInputStream(
-                    new ByteArrayInputStream(entrega.dados()))) {
-                remetente = dados.readUTF();
-                int tamanho = dados.readInt();
-
-                if (tamanho < 1 || tamanho > 60 * 1024) {
-                    throw new IllegalArgumentException(
-                            "Tamanho de envelope inválido.");
-                }
-
-                envelope = new byte[tamanho];
-                dados.readFully(envelope);
-
-                if (dados.read() != -1) {
-                    throw new IllegalArgumentException(
-                            "Dados adicionais na entrega.");
-                }
-            }
-
-            X509Certificate certificado = procurar(remetente);
-
-            byte[] mensagem = EnvelopeSeguro.abrir(
-                    envelope,
-                    remetente,
-                    utilizador,
-                    certificado.getPublicKey(),
-                    identidade.chavePrivada());
-
-            // Só mostramos o conteúdo depois de verificar o envelope.
-            System.out.println("\nMensagem verificada de " + remetente + ": "
-                    + new String(mensagem, StandardCharsets.UTF_8));
-
-        } catch (Exception erro) {
-            System.err.println(
-                    "\nMensagem rejeitada: " + erro.getMessage());
-        }
-    }
-
-    private static void exigirSucesso(Protocolo.Mensagem resposta) {
-        if (resposta.tipo() != Protocolo.SUCESSO) {
-            throw new IllegalStateException(
-                    "Pedido recusado: " + texto(resposta));
-        }
-    }
-
-    private void terminarLigacao() {
-        ativa = false;
-
-        try {
-            ligacao.close();
-        } catch (java.io.IOException ignorado) {
-            // A ligação já está a terminar.
-        }
-    }
-
-    private static String texto(Protocolo.Mensagem mensagem) {
-        return new String(mensagem.dados(), StandardCharsets.UTF_8);
     }
 }

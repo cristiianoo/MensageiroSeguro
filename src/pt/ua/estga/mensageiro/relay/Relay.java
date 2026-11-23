@@ -79,6 +79,10 @@ public final class Relay {
             // A mesma chave assina os pontos de controlo da auditoria.
             identidadeRelay = IdentidadeLocal.carregar(
                     ficheiroIdentidade, passeIdentidade, "relay");
+        } catch (ConfiguracaoTLS.PalavraPasseIncorreta erro) {
+            System.err.println(erro.getMessage());
+            System.exit(1);
+            return;
         } finally {
             if (passeIdentidade != null) {
                 Arrays.fill(passeIdentidade, '\0');

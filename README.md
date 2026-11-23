@@ -115,6 +115,14 @@ java -cp out pt.ua.estga.mensageiro.cliente.Cliente joao
 
 Esperar que ambos apresentem `Registo confirmado`.
 
+Em alternativa, cada cliente pode ser aberto numa janela:
+
+```bash
+java -cp out pt.ua.estga.mensageiro.cliente.ClienteGUI cristiano
+```
+
+A janela pede as mesmas palavras-passe, mostra a impressão digital SHA-256 do certificado do contacto, as conversas e um painel de eventos de segurança (ligação TLS, mensagens levantadas, mensagens rejeitadas). A consola e a janela usam a mesma `SessaoCliente`; podem falar uma com a outra.
+
 ### 5. Trocar mensagens
 
 No João:
@@ -164,7 +172,7 @@ java -cp out pt.ua.estga.mensageiro.auditoria.VerificadorAuditoria \
 
 | Caminho | Conteúdo |
 |---|---|
-| `src/pt/ua/estga/mensageiro/cliente/` | Cliente interativo e receção de mensagens |
+| `src/pt/ua/estga/mensageiro/cliente/` | Sessão com o relay (`SessaoCliente`), cliente de consola e interface gráfica Swing |
 | `src/pt/ua/estga/mensageiro/relay/` | Registo, descoberta, encaminhamento, armazenamento diferido e auditoria |
 | `src/pt/ua/estga/mensageiro/auditoria/` | Verificador independente do registo de auditoria |
 | `src/pt/ua/estga/mensageiro/seguranca/` | TLS, identidades, validação de certificados, envelope e testes |
